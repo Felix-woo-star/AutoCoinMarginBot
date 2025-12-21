@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+.env
+.venv/
+.uvcache/
+.git/
+logs/
+config.yaml
+config.backtest.yaml
+tune_results.csv

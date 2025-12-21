@@ -1,0 +1,45 @@
+# Example config (do not store secrets)
+mode: prod  # dev=백테스트 스텁, prod=실거래
+
+symbols: ["BTCUSDT"]
+leverage: 3
+margin_mode: ISOLATED
+order_size_usdt: 100
+initial_balance_usdt: 10000
+backtest_limit: 500
+backtest_start: null
+backtest_end: null
+dry_run: true
+
+strategy:
+  take_profit_move_long: 0.03
+  take_profit_move_short: 0.03
+  stop_loss_long: 0.01
+  stop_loss_short: 0.01
+  partial_take_profit_pct: 0.5
+  band:
+    method: std
+    k: 0.015
+    candle_interval: 15m
+    use_api_vwap: true
+    vwap_lookback: 300
+    vwap_refresh_sec: 60
+  anchor:
+    anchor_type: daily_open
+    manual_time_iso: null
+    manual_price: null
+
+exchange:
+  env: mainnet  # testnet | mainnet
+  api_key: ""
+  api_secret: ""
+  rest_base: https://api.bybit.com
+  ws_public: wss://stream.bybit.com/v5/public/linear
+  ws_private: wss://stream.bybit.com/v5/private
+
+telegram:
+  enabled: true
+  bot_token: ""
+  chat_id: ""
+
+log_level: INFO
