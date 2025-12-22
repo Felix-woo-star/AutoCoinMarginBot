@@ -125,6 +125,19 @@ class BybitClient:
         self._vwap_cache[key] = (now, vwap)
         return vwap
 
+    async def get_wallet_balance(self, account_type: str = "UNIFIED") -> Dict[str, Any]:
+        """지갑 잔고를 조회한다."""
+        endpoint = "/v5/account/wallet-balance"
+        params = {"accountType": account_type}
+        headers = self._auth_headers(query=params)
+        res = await self._client.get(endpoint, headers=headers, params=params)
+        res.raise_for_status()
+        data = res.json()
+        if data.get("retCode") != 0:
+            raise RuntimeError(f"Bybit error {data}")
+        result = (data.get("result", {}).get("list") or [])
+        return result[0] if result else {}
+
     async def get_lot_size_filter(self, symbol: str) -> Optional[Tuple[str, str]]:
         """심볼의 최소 주문 수량/스텝을 조회한다."""
         cached = self._lot_size_cache.get(symbol)
