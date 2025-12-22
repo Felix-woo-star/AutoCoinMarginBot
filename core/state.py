@@ -50,6 +50,7 @@ class Trader:
         self.coin_balance: Dict[str, float] = {sym: 0.0 for sym in settings.symbols}
         self._qty_filters: Dict[str, Tuple[Decimal, Decimal]] = {}
         self._min_qty_warn_ts: Dict[str, float] = {}
+        self._last_balance_ts: float = 0.0
 
     async def handle_ticker(self, ticker: dict) -> None:
         """티커 1건을 받아 포지션 상태를 갱신한다."""
@@ -117,6 +118,7 @@ class Trader:
         self.coin_balance[symbol] = qty if side == "LONG" else -qty
         logger.info(f"[잔고] 현금={self.cash_balance:.2f} USDT, 코인={self.coin_balance[symbol]:.6f} {symbol}")
         await self.alerter.send(f"*Enter {side}* {symbol} qty={qty} @ {price}")
+        await self._log_wallet_balance(note="enter")
 
     async def _manage_long(self, pos: PositionState, price: float) -> None:
         """롱 포지션 TP/SL 관리(TP는 take_profit_move_long)."""
@@ -168,6 +170,7 @@ class Trader:
         pos.partial_taken = True
         logger.info(f"[잔고] 현금={self.cash_balance:.2f} USDT, 코인={self.coin_balance[pos.symbol]:.6f} {pos.symbol}")
         await self.alerter.send(f"*Partial TP* {pos.side} {pos.symbol} qty={qty} @ {price} | {reason}")
+        await self._log_wallet_balance(note="partial")
 
     async def _close_position(self, pos: PositionState, price: float, reason: str) -> None:
         """잔여 물량 전량 청산."""
@@ -198,6 +201,7 @@ class Trader:
         pos.partial_taken = False
         self.coin_balance[pos.symbol] = 0.0
         logger.info(f"[잔고] 현금={self.cash_balance:.2f} USDT, 코인={self.coin_balance[pos.symbol]:.6f} {pos.symbol}")
+        await self._log_wallet_balance(note="exit")
 
     def _calc_qty(self, price: float) -> float:
         """주문 수량(계좌 USDT 기준)을 계산한다."""
@@ -249,3 +253,35 @@ class Trader:
         )
         logger.warning(msg)
         await self.alerter.send(msg)
+
+    async def _log_wallet_balance(self, note: str) -> None:
+        now = time.time()
+        if now - self._last_balance_ts < 60:
+            return
+        self._last_balance_ts = now
+        try:
+            data = await self.client.get_wallet_balance()
+        except Exception as exc:
+            logger.warning("[실잔고] 조회 실패 note={} error={}", note, exc)
+            return
+        if not data:
+            return
+        total_available = data.get("totalAvailableBalance")
+        total_wallet = data.get("totalWalletBalance")
+        total_margin = data.get("totalMarginBalance")
+        usdt_available = None
+        usdt_wallet = None
+        for coin in data.get("coin") or []:
+            if coin.get("coin") == "USDT":
+                usdt_available = coin.get("availableToWithdraw") or coin.get("availableToBorrow")
+                usdt_wallet = coin.get("walletBalance") or coin.get("equity")
+                break
+        logger.info(
+            "[실잔고] note={} totalAvailable={} totalWallet={} totalMargin={} usdtAvailable={} usdtWallet={}",
+            note,
+            total_available,
+            total_wallet,
+            total_margin,
+            usdt_available,
+            usdt_wallet,
+        )
