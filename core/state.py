@@ -101,6 +101,59 @@ class Trader:
                 return
             await self._manage_short(pos, price)
 
+    async def sync_positions(self) -> None:
+        """거래소 포지션을 읽어 내부 상태를 동기화한다."""
+        for symbol in self.settings.symbols:
+            positions = await self.client.get_positions(symbol=symbol)
+            active = []
+            for p in positions:
+                try:
+                    size = float(p.get("size") or 0)
+                except (TypeError, ValueError):
+                    size = 0.0
+                if size > 0:
+                    active.append((p, size))
+
+            if not active:
+                continue
+            if len(active) > 1:
+                msg = f"[포지션 동기화 실패] {symbol}에 여러 포지션이 있어 동기화를 중단합니다."
+                logger.error(msg)
+                await self.alerter.send(msg)
+                raise RuntimeError(msg)
+
+            p, size = active[0]
+            side_raw = (p.get("side") or "").lower()
+            side = "LONG" if side_raw in ("buy", "long") else "SHORT"
+            try:
+                entry_price = float(p.get("avgPrice") or p.get("entryPrice") or 0.0)
+            except (TypeError, ValueError):
+                entry_price = 0.0
+            expected_qty = 0.0
+            if entry_price > 0:
+                expected_qty = round(self.settings.order_size_usdt / entry_price, 6)
+            partial_taken = False
+            if expected_qty > 0:
+                threshold = expected_qty * (1 - self.settings.strategy.partial_take_profit_pct) + 1e-9
+                partial_taken = size <= threshold
+
+            pos = self.positions[symbol]
+            pos.side = side
+            pos.entry_price = entry_price or None
+            pos.size = size
+            pos.partial_taken = partial_taken
+            self.coin_balance[symbol] = size if side == "LONG" else -size
+            logger.info(
+                "[포지션 동기화] {} side={} size={} entry_price={} partial_taken={}",
+                symbol,
+                side,
+                size,
+                entry_price,
+                partial_taken,
+            )
+
+        await self._log_wallet_balance(note="sync")
+
     async def _open_position(self, symbol: str, side: str, price: float) -> None:
         """시장가로 신규 진입."""
         qty = self._calc_qty(price)

@@ -39,6 +39,9 @@ async def run_bot(settings: AppSettings, iterations: int, alerter: TelegramAlert
                 await client.set_leverage(symbol, settings.leverage)
                 await client.set_margin_mode(symbol, settings.margin_mode)
 
+        if not settings.dry_run:
+            await trader.sync_positions()
+
         executed = 0
         while iterations <= 0 or executed < iterations:
             for symbol in settings.symbols:
