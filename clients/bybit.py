@@ -70,6 +70,28 @@ class BybitClient:
         result = (data.get("result", {}).get("list") or [])
         return result[0] if result else {}
 
+    async def get_tickers(self, symbols: list[str]) -> Dict[str, Dict[str, Any]]:
+        """여러 심볼의 티커를 한 번에 조회한다."""
+        if not symbols:
+            return {}
+        endpoint = "/v5/market/tickers"
+        params = {"category": "linear"}
+        if len(symbols) == 1:
+            params["symbol"] = symbols[0]
+        res = await self._client.get(endpoint, params=params)
+        res.raise_for_status()
+        data = res.json()
+        if data.get("retCode") != 0:
+            raise RuntimeError(f"Bybit error {data}")
+        result = (data.get("result", {}).get("list") or [])
+        target = set(symbols)
+        tickers: Dict[str, Dict[str, Any]] = {}
+        for item in result:
+            symbol = item.get("symbol")
+            if symbol in target:
+                tickers[symbol] = item
+        return tickers
+
     async def get_local_vwap(
         self, symbol: str, interval: str, limit: int, refresh_sec: int = 30
     ) -> Optional[float]:
