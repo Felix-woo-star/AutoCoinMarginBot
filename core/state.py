@@ -181,7 +181,8 @@ class Trader:
             await self._close_position(pos, price, reason="Long stop-loss hit")
             return
         if not pos.partial_taken and price >= tp_level:
-            await self._partial_take_profit(pos, price, reason="Long TP1 +3%")
+            tp_pct = self.settings.strategy.take_profit_move_long * 100
+            await self._partial_take_profit(pos, price, reason=f"Long TP1 +{tp_pct:.2f}%")
 
     async def _manage_short(self, pos: PositionState, price: float) -> None:
         """숏 포지션 TP/SL 관리(TP는 take_profit_move_short)."""
@@ -191,7 +192,8 @@ class Trader:
             await self._close_position(pos, price, reason="Short stop-loss hit")
             return
         if not pos.partial_taken and price <= tp_level:
-            await self._partial_take_profit(pos, price, reason="Short TP1 -3%")
+            tp_pct = self.settings.strategy.take_profit_move_short * 100
+            await self._partial_take_profit(pos, price, reason=f"Short TP1 -{tp_pct:.2f}%")
 
     async def _partial_take_profit(self, pos: PositionState, price: float, reason: str) -> None:
         """부분 익절 50% 실행."""
