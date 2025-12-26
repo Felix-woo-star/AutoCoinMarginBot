@@ -43,11 +43,15 @@ async def run_bot(settings: AppSettings, iterations: int, alerter: TelegramAlert
             await trader.sync_positions()
 
         executed = 0
+        poll_interval = max(0.1, float(settings.poll_interval_sec))
         while iterations <= 0 or executed < iterations:
+            tickers = await client.get_tickers(settings.symbols)
             for symbol in settings.symbols:
-                ticker = await client.get_ticker(symbol)
+                ticker = tickers.get(symbol)
+                if not ticker:
+                    continue
                 await trader.handle_ticker(ticker)
-            await asyncio.sleep(1)
+            await asyncio.sleep(poll_interval)
             executed += 1
     finally:
         await client.close()

@@ -35,7 +35,7 @@ class BandSettings(BaseModel):
     candle_interval: str = Field(default="1h", description="Interval for price/vol signals")
     use_api_vwap: bool = Field(default=True, description="Use exchange-provided VWAP instead of local calc")
     vwap_lookback: int = Field(default=200, description="Candles used for local VWAP")
-    vwap_refresh_sec: int = Field(default=30, description="VWAP refresh interval in seconds")
+    vwap_refresh_sec: int = Field(default=120, description="VWAP refresh interval in seconds")
 
 
 class StrategySettings(BaseModel):
@@ -74,6 +74,8 @@ class AppSettings(BaseModel):
     backtest_start: Optional[str] = Field(default=None, description="백테스트 시작시각 ISO (예: 2024-01-01T00:00:00)")
     backtest_end: Optional[str] = Field(default=None, description="백테스트 종료시각 ISO (예: 2024-01-15T00:00:00)")
     dry_run: bool = Field(default=True, description="If true, do not send live orders")
+    poll_interval_sec: float = Field(default=3.0, description="Polling interval seconds in prod mode")
+    wallet_balance_log_interval_sec: int = Field(default=60, description="Wallet balance log interval seconds")
     strategy: StrategySettings = Field(default_factory=StrategySettings)
     exchange: ExchangeSettings = Field(default_factory=ExchangeSettings)
     telegram: TelegramSettings = Field(default_factory=TelegramSettings)

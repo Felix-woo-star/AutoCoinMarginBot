@@ -311,7 +311,8 @@ class Trader:
 
     async def _log_wallet_balance(self, note: str) -> None:
         now = time.time()
-        if now - self._last_balance_ts < 60:
+        min_interval = max(1, int(self.settings.wallet_balance_log_interval_sec))
+        if now - self._last_balance_ts < min_interval:
             return
         self._last_balance_ts = now
         try:

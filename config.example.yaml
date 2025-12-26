@@ -10,6 +10,8 @@ backtest_limit: 500
 backtest_start: null
 backtest_end: null
 dry_run: true
+poll_interval_sec: 3
+wallet_balance_log_interval_sec: 60
 
 strategy:
   take_profit_move_long: 0.03
@@ -23,7 +25,7 @@ strategy:
     candle_interval: 15m
     use_api_vwap: true
     vwap_lookback: 300
-    vwap_refresh_sec: 60
+    vwap_refresh_sec: 120
   anchor:
     anchor_type: daily_open
     manual_time_iso: null
