@@ -195,26 +195,39 @@ class Backtester:
 
             # 포지션 보유 시 TP/SL 우선, 반대 시그널은 종가 청산
             if side == "LONG":
-                tp = entry_price * (1 + self.settings.strategy.take_profit_move_long)
+                tp1 = self.settings.strategy.take_profit_move_long
+                tp1_level = entry_price * (1 + tp1)
                 sl = entry_price * (1 - self.settings.strategy.stop_loss_long)
+                if partial_taken and self.settings.strategy.move_stop_to_entry_after_partial:
+                    breakeven = entry_price * (1 + self.settings.strategy.break_even_buffer_pct)
+                    if breakeven > sl:
+                        sl = breakeven
                 exit_price = None
                 # 보수적으로 SL 우선 처리
                 if c["low"] <= sl:
                     exit_price = sl
-                elif (not partial_taken) and c["high"] >= tp:
+                elif (not partial_taken) and c["high"] >= tp1_level:
                     # 부분 익절 50%, 남은 물량 유지
-                    realized = (tp - entry_price) * (qty * self.settings.strategy.partial_take_profit_pct)
-                    fee = tp * qty * self.settings.strategy.partial_take_profit_pct * fee_rate * 2
+                    realized = (tp1_level - entry_price) * (qty * self.settings.strategy.partial_take_profit_pct)
+                    fee = tp1_level * qty * self.settings.strategy.partial_take_profit_pct * fee_rate * 2
                     equity += realized - fee
                     self.cash_balance += realized - fee
                     partial_qty = qty * self.settings.strategy.partial_take_profit_pct
                     remain_qty = qty * (1 - self.settings.strategy.partial_take_profit_pct)
                     self.coin_balance[symbol] = remain_qty
                     logger.info(
-                        f"[BT_부분익절] {side} {symbol} 익절수량={partial_qty:.6f} 가격={tp:.4f} 잔여수량={remain_qty:.6f} 시각={ts_str} | 현금={self.cash_balance:.2f}USDT 코인={self.coin_balance[symbol]:.6f}"
+                        f"[BT_부분익절] {side} {symbol} 익절수량={partial_qty:.6f} 가격={tp1_level:.4f} 잔여수량={remain_qty:.6f} 시각={ts_str} | 현금={self.cash_balance:.2f}USDT 코인={self.coin_balance[symbol]:.6f}"
                     )
                     qty *= (1 - self.settings.strategy.partial_take_profit_pct)
                     partial_taken = True
+                elif partial_taken:
+                    tp2 = self.settings.strategy.take_profit_move_long2
+                    if tp2 is None:
+                        tp2 = tp1 * 2
+                    if tp2 > 0:
+                        tp2_level = entry_price * (1 + tp2)
+                        if c["high"] >= tp2_level:
+                            exit_price = tp2_level
                 # 반대 시그널 시 종가 청산
                 if signal == Signal.SHORT_ENTRY:
                     exit_price = close
@@ -243,24 +256,37 @@ class Backtester:
                     side, entry_price, qty, partial_taken = None, None, 0.0, False
 
             elif side == "SHORT":
-                tp = entry_price * (1 - self.settings.strategy.take_profit_move_short)
+                tp1 = self.settings.strategy.take_profit_move_short
+                tp1_level = entry_price * (1 - tp1)
                 sl = entry_price * (1 + self.settings.strategy.stop_loss_short)
+                if partial_taken and self.settings.strategy.move_stop_to_entry_after_partial:
+                    breakeven = entry_price * (1 - self.settings.strategy.break_even_buffer_pct)
+                    if breakeven < sl:
+                        sl = breakeven
                 exit_price = None
                 if c["high"] >= sl:
                     exit_price = sl
-                elif (not partial_taken) and c["low"] <= tp:
-                    realized = (entry_price - tp) * (qty * self.settings.strategy.partial_take_profit_pct)
-                    fee = tp * qty * self.settings.strategy.partial_take_profit_pct * fee_rate * 2
+                elif (not partial_taken) and c["low"] <= tp1_level:
+                    realized = (entry_price - tp1_level) * (qty * self.settings.strategy.partial_take_profit_pct)
+                    fee = tp1_level * qty * self.settings.strategy.partial_take_profit_pct * fee_rate * 2
                     equity += realized - fee
                     self.cash_balance += realized - fee
                     partial_qty = qty * self.settings.strategy.partial_take_profit_pct
                     remain_qty = qty * (1 - self.settings.strategy.partial_take_profit_pct)
                     self.coin_balance[symbol] = -remain_qty
                     logger.info(
-                        f"[BT_부분익절] {side} {symbol} 익절수량={partial_qty:.6f} 가격={tp:.4f} 잔여수량={remain_qty:.6f} 시각={ts_str} | 현금={self.cash_balance:.2f}USDT 코인={self.coin_balance[symbol]:.6f}"
+                        f"[BT_부분익절] {side} {symbol} 익절수량={partial_qty:.6f} 가격={tp1_level:.4f} 잔여수량={remain_qty:.6f} 시각={ts_str} | 현금={self.cash_balance:.2f}USDT 코인={self.coin_balance[symbol]:.6f}"
                     )
                     qty *= (1 - self.settings.strategy.partial_take_profit_pct)
                     partial_taken = True
+                elif partial_taken:
+                    tp2 = self.settings.strategy.take_profit_move_short2
+                    if tp2 is None:
+                        tp2 = tp1 * 2
+                    if tp2 > 0:
+                        tp2_level = entry_price * (1 - tp2)
+                        if c["low"] <= tp2_level:
+                            exit_price = tp2_level
                 if signal == Signal.LONG_ENTRY:
                     exit_price = close
                 if exit_price and entry_price is not None:

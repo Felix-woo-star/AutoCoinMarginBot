@@ -175,25 +175,63 @@ class Trader:
 
     async def _manage_long(self, pos: PositionState, price: float) -> None:
         """롱 포지션 TP/SL 관리(TP는 take_profit_move_long)."""
-        tp_level = pos.entry_price * (1 + self.settings.strategy.take_profit_move_long)
+        tp1 = self.settings.strategy.take_profit_move_long
+        tp_level = pos.entry_price * (1 + tp1)
         sl_level = pos.entry_price * (1 - self.settings.strategy.stop_loss_long)
+        moved_stop = False
+        if pos.partial_taken and self.settings.strategy.move_stop_to_entry_after_partial:
+            breakeven = pos.entry_price * (1 + self.settings.strategy.break_even_buffer_pct)
+            if breakeven > sl_level:
+                sl_level = breakeven
+                moved_stop = True
         if price <= sl_level:
-            await self._close_position(pos, price, reason="Long stop-loss hit")
+            reason = "Long breakeven stop hit" if moved_stop else "Long stop-loss hit"
+            await self._close_position(pos, price, reason=reason)
             return
         if not pos.partial_taken and price >= tp_level:
-            tp_pct = self.settings.strategy.take_profit_move_long * 100
+            tp_pct = tp1 * 100
             await self._partial_take_profit(pos, price, reason=f"Long TP1 +{tp_pct:.2f}%")
+            return
+        if pos.partial_taken:
+            tp2 = self.settings.strategy.take_profit_move_long2
+            if tp2 is None:
+                tp2 = tp1 * 2
+            if tp2 > 0:
+                tp2_level = pos.entry_price * (1 + tp2)
+                if price >= tp2_level:
+                    tp2_pct = tp2 * 100
+                    await self._close_position(pos, price, reason=f"Long TP2 +{tp2_pct:.2f}%")
+                    return
 
     async def _manage_short(self, pos: PositionState, price: float) -> None:
         """숏 포지션 TP/SL 관리(TP는 take_profit_move_short)."""
-        tp_level = pos.entry_price * (1 - self.settings.strategy.take_profit_move_short)
+        tp1 = self.settings.strategy.take_profit_move_short
+        tp_level = pos.entry_price * (1 - tp1)
         sl_level = pos.entry_price * (1 + self.settings.strategy.stop_loss_short)
+        moved_stop = False
+        if pos.partial_taken and self.settings.strategy.move_stop_to_entry_after_partial:
+            breakeven = pos.entry_price * (1 - self.settings.strategy.break_even_buffer_pct)
+            if breakeven < sl_level:
+                sl_level = breakeven
+                moved_stop = True
         if price >= sl_level:
-            await self._close_position(pos, price, reason="Short stop-loss hit")
+            reason = "Short breakeven stop hit" if moved_stop else "Short stop-loss hit"
+            await self._close_position(pos, price, reason=reason)
             return
         if not pos.partial_taken and price <= tp_level:
-            tp_pct = self.settings.strategy.take_profit_move_short * 100
+            tp_pct = tp1 * 100
             await self._partial_take_profit(pos, price, reason=f"Short TP1 -{tp_pct:.2f}%")
+            return
+        if pos.partial_taken:
+            tp2 = self.settings.strategy.take_profit_move_short2
+            if tp2 is None:
+                tp2 = tp1 * 2
+            if tp2 > 0:
+                tp2_level = pos.entry_price * (1 - tp2)
+                if price <= tp2_level:
+                    tp2_pct = tp2 * 100
+                    await self._close_position(pos, price, reason=f"Short TP2 -{tp2_pct:.2f}%")
+                    return
 
     async def _partial_take_profit(self, pos: PositionState, price: float, reason: str) -> None:
         """부분 익절 50% 실행."""
