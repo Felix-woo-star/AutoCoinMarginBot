@@ -44,6 +44,18 @@ class StrategySettings(BaseModel):
     partial_take_profit_pct: float = Field(default=0.5, description="Portion to take at first TP")
     take_profit_move_long: float = Field(default=0.03, description="First TP threshold for longs (fraction, 0.03=3%)")
     take_profit_move_short: float = Field(default=0.03, description="First TP threshold for shorts (fraction, 0.03=3%)")
+    take_profit_move_long2: Optional[float] = Field(
+        default=None, description="Second TP threshold for longs (None=2x TP1, 0=disable)"
+    )
+    take_profit_move_short2: Optional[float] = Field(
+        default=None, description="Second TP threshold for shorts (None=2x TP1, 0=disable)"
+    )
+    move_stop_to_entry_after_partial: bool = Field(
+        default=True, description="Move stop to break-even after partial TP"
+    )
+    break_even_buffer_pct: float = Field(
+        default=0.0, description="Break-even stop buffer (fraction, 0.001=0.1%)"
+    )
     stop_loss_long: float = Field(default=0.01, description="Hard stop for longs (fraction, 0.01=1%)")
     stop_loss_short: float = Field(default=0.01, description="Hard stop for shorts (fraction, 0.01=1%)")
 

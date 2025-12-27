@@ -16,6 +16,10 @@ wallet_balance_log_interval_sec: 60
 strategy:
   take_profit_move_long: 0.03
   take_profit_move_short: 0.03
+  take_profit_move_long2: null  # null=TP1*2, 0=비활성화
+  take_profit_move_short2: null # null=TP1*2, 0=비활성화
+  move_stop_to_entry_after_partial: true
+  break_even_buffer_pct: 0.0    # 0.001=0.1%
   stop_loss_long: 0.01
   stop_loss_short: 0.01
   partial_take_profit_pct: 0.5
