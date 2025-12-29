@@ -38,6 +38,17 @@ class BandSettings(BaseModel):
     vwap_refresh_sec: int = Field(default=120, description="VWAP refresh interval in seconds")
 
 
+class TrendFilterSettings(BaseModel):
+    """추세 필터(EMA 크로스) 설정."""
+
+    enabled: bool = Field(default=False, description="Enable EMA cross trend filter")
+    ema_interval: str = Field(default="1h", description="EMA interval (e.g., 1h, 4h)")
+    ema_fast: int = Field(default=20, description="Fast EMA length")
+    ema_slow: int = Field(default=50, description="Slow EMA length")
+    ema_lookback: int = Field(default=150, description="Number of candles for EMA calculation")
+    ema_refresh_sec: int = Field(default=300, description="EMA refresh interval seconds")
+
+
 class StrategySettings(BaseModel):
     anchor: AnchorSettings = Field(default_factory=AnchorSettings)
     band: BandSettings = Field(default_factory=BandSettings)
@@ -58,6 +69,7 @@ class StrategySettings(BaseModel):
     )
     stop_loss_long: float = Field(default=0.01, description="Hard stop for longs (fraction, 0.01=1%)")
     stop_loss_short: float = Field(default=0.01, description="Hard stop for shorts (fraction, 0.01=1%)")
+    trend_filter: TrendFilterSettings = Field(default_factory=TrendFilterSettings)
 
 
 class ExchangeSettings(BaseModel):

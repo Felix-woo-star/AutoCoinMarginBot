@@ -25,6 +25,7 @@ class BybitClient:
         self.settings = settings
         self._client = httpx.AsyncClient(base_url=settings.exchange.rest_base, timeout=10.0)
         self._vwap_cache: Dict[Tuple[str, str, int], Tuple[float, float]] = {}
+        self._ema_cache: Dict[Tuple[str, str, int, int, int], Tuple[float, Tuple[float, float]]] = {}
         self._lot_size_cache: Dict[str, Tuple[str, str]] = {}
 
     async def close(self) -> None:
@@ -146,6 +147,71 @@ class BybitClient:
         vwap = sum_turnover / sum_volume
         self._vwap_cache[key] = (now, vwap)
         return vwap
+
+    async def get_ema_pair(
+        self,
+        symbol: str,
+        interval: str,
+        fast: int,
+        slow: int,
+        lookback: int,
+        refresh_sec: int = 300,
+    ) -> Optional[Tuple[float, float]]:
+        """EMA fast/slow 값을 계산한다(캐시 사용)."""
+        if fast <= 0 or slow <= 0 or lookback <= 0:
+            return None
+        fast_len, slow_len = (fast, slow) if fast <= slow else (slow, fast)
+        key = (symbol, interval, fast_len, slow_len, lookback)
+        now = time.time()
+        cached = self._ema_cache.get(key)
+        if cached and (now - cached[0] < refresh_sec):
+            ema_fast, ema_slow = cached[1]
+            return (ema_fast, ema_slow) if fast <= slow else (ema_slow, ema_fast)
+
+        endpoint = "/v5/market/kline"
+        params = {
+            "category": "linear",
+            "symbol": symbol,
+            "interval": self._normalize_interval(interval),
+            "limit": lookback,
+        }
+        try:
+            res = await self._client.get(endpoint, params=params)
+            res.raise_for_status()
+            data = res.json()
+            if data.get("retCode") != 0:
+                raise RuntimeError(f"Bybit error {data}")
+        except Exception as exc:
+            if cached:
+                logger.warning(
+                    "EMA fetch failed; using cached value symbol={} error={}",
+                    symbol,
+                    exc,
+                )
+                ema_fast, ema_slow = cached[1]
+                return (ema_fast, ema_slow) if fast <= slow else (ema_slow, ema_fast)
+            logger.error("EMA fetch failed symbol={} error={}", symbol, exc)
+            return None
+
+        klines = data.get("result", {}).get("list") or []
+        parsed = []
+        for k in klines:
+            try:
+                ts = int(k[0])
+                close = float(k[4])
+            except (TypeError, ValueError, IndexError):
+                continue
+            parsed.append((ts, close))
+        if not parsed:
+            return None
+        parsed.sort(key=lambda x: x[0])
+        closes = [c for _, c in parsed]
+        ema_fast_val = self._calc_ema(closes, fast_len)
+        ema_slow_val = self._calc_ema(closes, slow_len)
+        if ema_fast_val is None or ema_slow_val is None:
+            return None
+        self._ema_cache[key] = (now, (ema_fast_val, ema_slow_val))
+        return (ema_fast_val, ema_slow_val) if fast <= slow else (ema_slow_val, ema_fast_val)
 
     async def get_wallet_balance(self, account_type: str = "UNIFIED") -> Dict[str, Any]:
         """지갑 잔고를 조회한다."""
@@ -284,6 +350,18 @@ class BybitClient:
     def _json_dumps(payload: Optional[dict]) -> str:
         """Bybit 서명과 동일한 JSON 문자열을 만든다."""
         return json.dumps(payload or {}, separators=(",", ":"), ensure_ascii=False)
+
+    @staticmethod
+    def _calc_ema(closes: list[float], period: int) -> Optional[float]:
+        """단순 EMA 계산(가장 최신 EMA 반환)."""
+        if period <= 0 or len(closes) < period:
+            return None
+        sma = sum(closes[:period]) / period
+        ema = sma
+        alpha = 2 / (period + 1)
+        for price in closes[period:]:
+            ema = (price - ema) * alpha + ema
+        return ema
 
 
 async def main_debug() -> None:

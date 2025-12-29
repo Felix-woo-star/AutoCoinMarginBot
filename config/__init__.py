@@ -3,6 +3,7 @@
 from .settings import (
     AnchorSettings,
     BandSettings,
+    TrendFilterSettings,
     StrategySettings,
     ExchangeSettings,
     TelegramSettings,
@@ -13,6 +14,7 @@ from .settings import (
 __all__ = [
     "AnchorSettings",
     "BandSettings",
+    "TrendFilterSettings",
     "StrategySettings",
     "ExchangeSettings",
     "TelegramSettings",
