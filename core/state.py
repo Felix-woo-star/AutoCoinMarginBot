@@ -51,6 +51,8 @@ class Trader:
         self._qty_filters: Dict[str, Tuple[Decimal, Decimal]] = {}
         self._min_qty_warn_ts: Dict[str, float] = {}
         self._last_balance_ts: float = 0.0
+        self._trend_block_ts: Dict[str, float] = {}
+        self._trend_warn_ts: Dict[str, float] = {}
 
     async def handle_ticker(self, ticker: dict) -> None:
         """티커 1건을 받아 포지션 상태를 갱신한다."""
@@ -85,9 +87,11 @@ class Trader:
         signal = self.strategy.evaluate(ticker)
         if pos.is_flat:
             if signal == Signal.LONG_ENTRY:
-                await self._open_position(symbol, "LONG", price)
+                if await self._trend_allows(symbol, signal):
+                    await self._open_position(symbol, "LONG", price)
             elif signal == Signal.SHORT_ENTRY:
-                await self._open_position(symbol, "SHORT", price)
+                if await self._trend_allows(symbol, signal):
+                    await self._open_position(symbol, "SHORT", price)
             return
 
         if pos.side == "LONG":
@@ -153,6 +157,45 @@ class Trader:
             )
 
         await self._log_wallet_balance(note="sync")
+
+    async def _trend_allows(self, symbol: str, signal: Signal) -> bool:
+        """EMA 크로스 추세 필터로 진입을 제한한다."""
+        tf = self.settings.strategy.trend_filter
+        if not tf.enabled:
+            return True
+        if signal not in (Signal.LONG_ENTRY, Signal.SHORT_ENTRY):
+            return True
+        ema_pair = await self.client.get_ema_pair(
+            symbol=symbol,
+            interval=tf.ema_interval,
+            fast=tf.ema_fast,
+            slow=tf.ema_slow,
+            lookback=tf.ema_lookback,
+            refresh_sec=tf.ema_refresh_sec,
+        )
+        if not ema_pair:
+            now = time.time()
+            last_ts = self._trend_warn_ts.get(symbol, 0.0)
+            if now - last_ts >= 300:
+                self._trend_warn_ts[symbol] = now
+                logger.warning("[추세필터] EMA 조회 실패로 진입을 보류합니다 symbol={}", symbol)
+            return False
+
+        ema_fast, ema_slow = ema_pair
+        allow = ema_fast > ema_slow if signal == Signal.LONG_ENTRY else ema_fast < ema_slow
+        if not allow:
+            now = time.time()
+            last_ts = self._trend_block_ts.get(symbol, 0.0)
+            if now - last_ts >= 300:
+                self._trend_block_ts[symbol] = now
+                logger.info(
+                    "[추세필터] 진입 차단 symbol={} signal={} ema_fast={:.6f} ema_slow={:.6f}",
+                    symbol,
+                    signal.name,
+                    ema_fast,
+                    ema_slow,
+                )
+        return allow
 
     async def _open_position(self, symbol: str, side: str, price: float) -> None:
         """시장가로 신규 진입."""

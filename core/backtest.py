@@ -131,6 +131,34 @@ class Backtester:
             return s.replace("m", "")
         return s
 
+    @staticmethod
+    def _interval_to_minutes(interval: str) -> Optional[int]:
+        s = str(interval).strip().lower()
+        if s.endswith("h"):
+            try:
+                return int(s[:-1]) * 60
+            except ValueError:
+                return None
+        if s.endswith("m"):
+            try:
+                return int(s[:-1])
+            except ValueError:
+                return None
+        if s.isdigit():
+            return int(s)
+        return None
+
+    @staticmethod
+    def _calc_ema(closes: List[float], period: int) -> Optional[float]:
+        if period <= 0 or len(closes) < period:
+            return None
+        sma = sum(closes[:period]) / period
+        ema = sma
+        alpha = 2 / (period + 1)
+        for price in closes[period:]:
+            ema = (price - ema) * alpha + ema
+        return ema
+
     async def _simulate(self, symbol: str, candles: List[dict]) -> None:
         """캔들을 순회하며 시그널/포지션/손익을 계산(TP는 롱/숏 분리 설정 반영)."""
         side: Optional[str] = None
@@ -144,8 +172,35 @@ class Backtester:
         vwap_window = deque()
         sum_volume = 0.0
         sum_turnover = 0.0
+        tf = self.settings.strategy.trend_filter
+        trend_minutes = self._interval_to_minutes(tf.ema_interval) if tf.enabled else None
+        base_minutes = self._interval_to_minutes(self.settings.strategy.band.candle_interval) if tf.enabled else None
+        use_trend = bool(tf.enabled and trend_minutes and base_minutes and trend_minutes % base_minutes == 0)
+        if tf.enabled and not use_trend:
+            logger.warning("[BT] 추세 필터 비활성화: interval 조합이 지원되지 않습니다.")
+        trend_ms = (trend_minutes or 0) * 60 * 1000
+        trend_bucket = None
+        trend_closes: List[float] = []
+        prev_trend_close: Optional[float] = None
+        trend_ema_fast: Optional[float] = None
+        trend_ema_slow: Optional[float] = None
 
         for c in candles:
+            if use_trend:
+                bucket = c["start"] // trend_ms
+                if trend_bucket is None:
+                    trend_bucket = bucket
+                elif bucket != trend_bucket and prev_trend_close is not None:
+                    trend_closes.append(prev_trend_close)
+                    trend_bucket = bucket
+                prev_trend_close = c["close"]
+                if len(trend_closes) >= tf.ema_slow:
+                    trend_ema_fast = self._calc_ema(trend_closes, tf.ema_fast)
+                    trend_ema_slow = self._calc_ema(trend_closes, tf.ema_slow)
+                else:
+                    trend_ema_fast = None
+                    trend_ema_slow = None
+
             close = c["close"]
             volume = float(c.get("volume") or 0.0)
             turnover = float(c.get("turnover") or 0.0)
@@ -172,6 +227,16 @@ class Backtester:
 
             # 포지션이 없을 때: 시그널 진입
             if side is None:
+                if use_trend and signal in (Signal.LONG_ENTRY, Signal.SHORT_ENTRY):
+                    if trend_ema_fast is None or trend_ema_slow is None:
+                        self.equity_curve.append(equity)
+                        continue
+                    if signal == Signal.LONG_ENTRY and trend_ema_fast <= trend_ema_slow:
+                        self.equity_curve.append(equity)
+                        continue
+                    if signal == Signal.SHORT_ENTRY and trend_ema_fast >= trend_ema_slow:
+                        self.equity_curve.append(equity)
+                        continue
                 if signal == Signal.LONG_ENTRY:
                     side = "LONG"
                     entry_price = close
