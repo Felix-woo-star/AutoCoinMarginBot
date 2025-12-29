@@ -51,6 +51,8 @@ class AnchoredVWAPStrategy:
         mark_price = ticker.get("markPrice")
         avg_price = ticker.get("avgPrice")
         vwap_price = ticker.get("vwap")
+        ema_fast_raw = ticker.get("emaFast")
+        ema_slow_raw = ticker.get("emaSlow")
         price = float(last_price or mark_price or 0.0)
         vwap = float(avg_price or vwap_price or 0.0)
 
@@ -58,15 +60,38 @@ class AnchoredVWAPStrategy:
         if now - self.ctx.last_debug_ts >= 60:
             if price and vwap:
                 premium = (price - vwap) / vwap
-                logger.info(
-                    "[DEBUG] ticker symbol={} lastPrice={} markPrice={} avgPrice={} vwap={} premium={:.6f}",
-                    symbol,
-                    last_price,
-                    mark_price,
-                    avg_price,
-                    vwap_price,
-                    premium,
-                )
+                ema_fast = None
+                ema_slow = None
+                try:
+                    if ema_fast_raw is not None:
+                        ema_fast = float(ema_fast_raw)
+                    if ema_slow_raw is not None:
+                        ema_slow = float(ema_slow_raw)
+                except (TypeError, ValueError):
+                    ema_fast = None
+                    ema_slow = None
+                if ema_fast is not None and ema_slow is not None:
+                    logger.info(
+                        "[DEBUG] ticker symbol={} lastPrice={} markPrice={} avgPrice={} vwap={} premium={:.6f} emaFast={:.6f} emaSlow={:.6f}",
+                        symbol,
+                        last_price,
+                        mark_price,
+                        avg_price,
+                        vwap_price,
+                        premium,
+                        ema_fast,
+                        ema_slow,
+                    )
+                else:
+                    logger.info(
+                        "[DEBUG] ticker symbol={} lastPrice={} markPrice={} avgPrice={} vwap={} premium={:.6f}",
+                        symbol,
+                        last_price,
+                        mark_price,
+                        avg_price,
+                        vwap_price,
+                        premium,
+                    )
             else:
                 logger.info(
                     "[DEBUG] ticker missing price/vwap symbol={} lastPrice={} markPrice={} avgPrice={} vwap={}",
