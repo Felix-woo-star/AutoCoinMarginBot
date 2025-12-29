@@ -53,6 +53,7 @@ class Trader:
         self._last_balance_ts: float = 0.0
         self._trend_block_ts: Dict[str, float] = {}
         self._trend_warn_ts: Dict[str, float] = {}
+        self._trend_ema_cache: Dict[str, Tuple[float, float, float]] = {}
 
     async def handle_ticker(self, ticker: dict) -> None:
         """티커 1건을 받아 포지션 상태를 갱신한다."""
@@ -84,6 +85,11 @@ class Trader:
                 ticker = dict(ticker)
                 ticker["vwap"] = local_vwap
 
+        ema_pair = await self._get_trend_ema(symbol)
+        if ema_pair:
+            ticker = dict(ticker)
+            ticker["emaFast"] = ema_pair[0]
+            ticker["emaSlow"] = ema_pair[1]
         signal = self.strategy.evaluate(ticker)
         if pos.is_flat:
             if signal == Signal.LONG_ENTRY:
@@ -165,20 +171,8 @@ class Trader:
             return True
         if signal not in (Signal.LONG_ENTRY, Signal.SHORT_ENTRY):
             return True
-        ema_pair = await self.client.get_ema_pair(
-            symbol=symbol,
-            interval=tf.ema_interval,
-            fast=tf.ema_fast,
-            slow=tf.ema_slow,
-            lookback=tf.ema_lookback,
-            refresh_sec=tf.ema_refresh_sec,
-        )
+        ema_pair = await self._get_trend_ema(symbol)
         if not ema_pair:
-            now = time.time()
-            last_ts = self._trend_warn_ts.get(symbol, 0.0)
-            if now - last_ts >= 300:
-                self._trend_warn_ts[symbol] = now
-                logger.warning("[추세필터] EMA 조회 실패로 진입을 보류합니다 symbol={}", symbol)
             return False
 
         ema_fast, ema_slow = ema_pair
@@ -196,6 +190,31 @@ class Trader:
                     ema_slow,
                 )
         return allow
+
+    async def _get_trend_ema(self, symbol: str) -> Optional[Tuple[float, float]]:
+        tf = self.settings.strategy.trend_filter
+        if not tf.enabled:
+            return None
+        now = time.time()
+        cached = self._trend_ema_cache.get(symbol)
+        if cached and (now - cached[0] < tf.ema_refresh_sec):
+            return (cached[1], cached[2])
+        ema_pair = await self.client.get_ema_pair(
+            symbol=symbol,
+            interval=tf.ema_interval,
+            fast=tf.ema_fast,
+            slow=tf.ema_slow,
+            lookback=tf.ema_lookback,
+            refresh_sec=tf.ema_refresh_sec,
+        )
+        if ema_pair:
+            self._trend_ema_cache[symbol] = (now, ema_pair[0], ema_pair[1])
+            return ema_pair
+        last_ts = self._trend_warn_ts.get(symbol, 0.0)
+        if now - last_ts >= 300:
+            self._trend_warn_ts[symbol] = now
+            logger.warning("[추세필터] EMA 조회 실패로 진입을 보류합니다 symbol={}", symbol)
+        return None
 
     async def _open_position(self, symbol: str, side: str, price: float) -> None:
         """시장가로 신규 진입."""
