@@ -49,6 +49,14 @@ class TrendFilterSettings(BaseModel):
     ema_refresh_sec: int = Field(default=300, description="EMA refresh interval seconds")
 
 
+class SignalConfirmSettings(BaseModel):
+    """진입 신호 확인(연속/다수결) 설정."""
+
+    enabled: bool = Field(default=False, description="Enable entry signal confirmation")
+    window: int = Field(default=3, description="Number of recent signals to check")
+    required: int = Field(default=2, description="Minimum matches in window to allow entry")
+
+
 class StrategySettings(BaseModel):
     anchor: AnchorSettings = Field(default_factory=AnchorSettings)
     band: BandSettings = Field(default_factory=BandSettings)
@@ -70,6 +78,7 @@ class StrategySettings(BaseModel):
     stop_loss_long: float = Field(default=0.01, description="Hard stop for longs (fraction, 0.01=1%)")
     stop_loss_short: float = Field(default=0.01, description="Hard stop for shorts (fraction, 0.01=1%)")
     trend_filter: TrendFilterSettings = Field(default_factory=TrendFilterSettings)
+    signal_confirm: SignalConfirmSettings = Field(default_factory=SignalConfirmSettings)
 
 
 class ExchangeSettings(BaseModel):

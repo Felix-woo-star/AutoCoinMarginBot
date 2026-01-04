@@ -37,6 +37,10 @@ strategy:
     ema_slow: 50
     ema_lookback: 150
     ema_refresh_sec: 300
+  signal_confirm:
+    enabled: false
+    window: 3
+    required: 2
   anchor:
     anchor_type: daily_open
     manual_time_iso: null
