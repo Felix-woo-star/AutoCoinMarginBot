@@ -173,6 +173,11 @@ class Backtester:
         sum_volume = 0.0
         sum_turnover = 0.0
         tf = self.settings.strategy.trend_filter
+        sc = self.settings.strategy.signal_confirm
+        sc_window = max(1, int(sc.window)) if sc.enabled else 0
+        sc_required = max(1, int(sc.required)) if sc.enabled else 0
+        sc_required = min(sc_required, sc_window) if sc.enabled else 0
+        signal_hist = deque(maxlen=sc_window) if sc.enabled else None
         trend_minutes = self._interval_to_minutes(tf.ema_interval) if tf.enabled else None
         base_minutes = self._interval_to_minutes(self.settings.strategy.band.candle_interval) if tf.enabled else None
         use_trend = bool(tf.enabled and trend_minutes and base_minutes and trend_minutes % base_minutes == 0)
@@ -224,6 +229,8 @@ class Backtester:
                     ticker["vwap"] = local_vwap
             signal = self.strategy.evaluate(ticker)
             ts_str = self._fmt_time(c["start"])
+            if signal_hist is not None:
+                signal_hist.append(signal)
 
             # 포지션이 없을 때: 시그널 진입
             if side is None:
@@ -237,12 +244,23 @@ class Backtester:
                     if signal == Signal.SHORT_ENTRY and trend_ema_fast >= trend_ema_slow:
                         self.equity_curve.append(equity)
                         continue
+                if signal_hist is not None and signal in (Signal.LONG_ENTRY, Signal.SHORT_ENTRY):
+                    if len(signal_hist) < sc_window:
+                        self.equity_curve.append(equity)
+                        continue
+                    target = signal
+                    matches = sum(1 for s in signal_hist if s == target)
+                    if matches < sc_required:
+                        self.equity_curve.append(equity)
+                        continue
                 if signal == Signal.LONG_ENTRY:
                     side = "LONG"
                     entry_price = close
                     qty = self._calc_qty(close)
                     partial_taken = False
                     self.coin_balance[symbol] = qty
+                    if signal_hist is not None:
+                        signal_hist.clear()
                     logger.info(
                         f"[BT_진입] {side} {symbol} 수량={qty:.6f} 가격={close:.4f} 시각={ts_str} | 현금={self.cash_balance:.2f}USDT 코인={self.coin_balance[symbol]:.6f}"
                     )
@@ -252,6 +270,8 @@ class Backtester:
                     qty = self._calc_qty(close)
                     partial_taken = False
                     self.coin_balance[symbol] = -qty
+                    if signal_hist is not None:
+                        signal_hist.clear()
                     logger.info(
                         f"[BT_진입] {side} {symbol} 수량={qty:.6f} 가격={close:.4f} 시각={ts_str} | 현금={self.cash_balance:.2f}USDT 코인={self.coin_balance[symbol]:.6f}"
                     )
@@ -318,6 +338,8 @@ class Backtester:
                             partial=partial_taken,
                         )
                     )
+                    if signal_hist is not None:
+                        signal_hist.clear()
                     side, entry_price, qty, partial_taken = None, None, 0.0, False
 
             elif side == "SHORT":
@@ -376,6 +398,8 @@ class Backtester:
                             partial=partial_taken,
                         )
                     )
+                    if signal_hist is not None:
+                        signal_hist.clear()
                     side, entry_price, qty, partial_taken = None, None, 0.0, False
 
             self.equity_curve.append(equity)

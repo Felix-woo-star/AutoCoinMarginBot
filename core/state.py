@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections import deque
 from decimal import Decimal
 import time
 from typing import Dict, Optional, Tuple
@@ -54,6 +55,7 @@ class Trader:
         self._trend_block_ts: Dict[str, float] = {}
         self._trend_warn_ts: Dict[str, float] = {}
         self._trend_ema_cache: Dict[str, Tuple[float, float, float]] = {}
+        self._signal_history: Dict[str, deque[Signal]] = {}
 
     async def handle_ticker(self, ticker: dict) -> None:
         """티커 1건을 받아 포지션 상태를 갱신한다."""
@@ -91,12 +93,13 @@ class Trader:
             ticker["emaFast"] = ema_pair[0]
             ticker["emaSlow"] = ema_pair[1]
         signal = self.strategy.evaluate(ticker)
+        self._record_signal(symbol, signal)
         if pos.is_flat:
             if signal == Signal.LONG_ENTRY:
-                if await self._trend_allows(symbol, signal):
+                if self._confirm_signal(symbol, signal) and await self._trend_allows(symbol, signal):
                     await self._open_position(symbol, "LONG", price)
             elif signal == Signal.SHORT_ENTRY:
-                if await self._trend_allows(symbol, signal):
+                if self._confirm_signal(symbol, signal) and await self._trend_allows(symbol, signal):
                     await self._open_position(symbol, "SHORT", price)
             return
 
@@ -191,6 +194,35 @@ class Trader:
                 )
         return allow
 
+    def _record_signal(self, symbol: str, signal: Signal) -> None:
+        sc = self.settings.strategy.signal_confirm
+        if not sc.enabled:
+            return
+        window = max(1, int(sc.window))
+        history = self._signal_history.get(symbol)
+        if not history or history.maxlen != window:
+            history = deque(maxlen=window)
+            self._signal_history[symbol] = history
+        history.append(signal)
+
+    def _confirm_signal(self, symbol: str, signal: Signal) -> bool:
+        sc = self.settings.strategy.signal_confirm
+        if not sc.enabled:
+            return True
+        if signal not in (Signal.LONG_ENTRY, Signal.SHORT_ENTRY):
+            return False
+        history = self._signal_history.get(symbol)
+        if not history or len(history) < max(1, int(sc.window)):
+            return False
+        required = max(1, int(sc.required))
+        required = min(required, len(history))
+        target = Signal.LONG_ENTRY if signal == Signal.LONG_ENTRY else Signal.SHORT_ENTRY
+        return sum(1 for s in history if s == target) >= required
+
+    def _reset_signal_history(self, symbol: str) -> None:
+        if symbol in self._signal_history:
+            self._signal_history[symbol].clear()
+
     async def _get_trend_ema(self, symbol: str) -> Optional[Tuple[float, float]]:
         tf = self.settings.strategy.trend_filter
         if not tf.enabled:
@@ -231,6 +263,7 @@ class Trader:
         pos.size = qty
         pos.partial_taken = False
         self.coin_balance[symbol] = qty if side == "LONG" else -qty
+        self._reset_signal_history(symbol)
         logger.info(f"[잔고] 현금={self.cash_balance:.2f} USDT, 코인={self.coin_balance[symbol]:.6f} {symbol}")
         await self.alerter.send(f"*Enter {side}* {symbol} qty={qty} @ {price}")
         await self._log_wallet_balance(note="enter")
@@ -355,6 +388,7 @@ class Trader:
         pos.size = 0.0
         pos.partial_taken = False
         self.coin_balance[pos.symbol] = 0.0
+        self._reset_signal_history(pos.symbol)
         logger.info(f"[잔고] 현금={self.cash_balance:.2f} USDT, 코인={self.coin_balance[pos.symbol]:.6f} {pos.symbol}")
         await self._log_wallet_balance(note="exit")
 
