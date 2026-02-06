@@ -41,6 +41,19 @@ strategy:
     enabled: false
     window: 3
     required: 2
+  regime:
+    enabled: false
+    interval: 1h
+    ema_fast: 20
+    ema_slow: 50
+    atr_period: 14
+    lookback: 200
+    refresh_sec: 300
+    ema_spread_trend_pct: 0.002
+    atr_trend_pct: 0.003
+    ema_spread_range_pct: 0.001
+    atr_range_pct: 0.002
+    neutral_behavior: vwap
   anchor:
     anchor_type: daily_open
     manual_time_iso: null

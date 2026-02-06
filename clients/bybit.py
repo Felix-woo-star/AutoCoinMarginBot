@@ -26,6 +26,9 @@ class BybitClient:
         self._client = httpx.AsyncClient(base_url=settings.exchange.rest_base, timeout=10.0)
         self._vwap_cache: Dict[Tuple[str, str, int], Tuple[float, float]] = {}
         self._ema_cache: Dict[Tuple[str, str, int, int, int], Tuple[float, Tuple[float, float]]] = {}
+        self._regime_cache: Dict[
+            Tuple[str, str, int, int, int, int], Tuple[float, Dict[str, float]]
+        ] = {}
         self._lot_size_cache: Dict[str, Tuple[str, str]] = {}
 
     async def close(self) -> None:
@@ -213,6 +216,80 @@ class BybitClient:
         self._ema_cache[key] = (now, (ema_fast_val, ema_slow_val))
         return (ema_fast_val, ema_slow_val) if fast <= slow else (ema_slow_val, ema_fast_val)
 
+    async def get_regime_metrics(
+        self,
+        symbol: str,
+        interval: str,
+        ema_fast: int,
+        ema_slow: int,
+        atr_period: int,
+        lookback: int,
+        refresh_sec: int = 300,
+    ) -> Optional[Dict[str, float]]:
+        """레짐 판별용 EMA/ATR 메트릭을 계산한다(캐시 사용)."""
+        if ema_fast <= 0 or ema_slow <= 0 or atr_period <= 0 or lookback <= 0:
+            return None
+        fast_len, slow_len = (ema_fast, ema_slow) if ema_fast <= ema_slow else (ema_slow, ema_fast)
+        key = (symbol, interval, fast_len, slow_len, atr_period, lookback)
+        now = time.time()
+        cached = self._regime_cache.get(key)
+        if cached and (now - cached[0] < refresh_sec):
+            return cached[1]
+
+        endpoint = "/v5/market/kline"
+        params = {
+            "category": "linear",
+            "symbol": symbol,
+            "interval": self._normalize_interval(interval),
+            "limit": lookback,
+        }
+        try:
+            res = await self._client.get(endpoint, params=params)
+            res.raise_for_status()
+            data = res.json()
+            if data.get("retCode") != 0:
+                raise RuntimeError(f"Bybit error {data}")
+        except Exception as exc:
+            if cached:
+                logger.warning(
+                    "Regime fetch failed; using cached value symbol={} error={}",
+                    symbol,
+                    exc,
+                )
+                return cached[1]
+            logger.error("Regime fetch failed symbol={} error={}", symbol, exc)
+            return None
+
+        klines = data.get("result", {}).get("list") or []
+        parsed = []
+        for k in klines:
+            try:
+                ts = int(k[0])
+                open_p = float(k[1])
+                high = float(k[2])
+                low = float(k[3])
+                close = float(k[4])
+            except (TypeError, ValueError, IndexError):
+                continue
+            parsed.append({"ts": ts, "open": open_p, "high": high, "low": low, "close": close})
+        if not parsed:
+            return None
+        parsed.sort(key=lambda x: x["ts"])
+        closes = [c["close"] for c in parsed]
+        ema_fast_val = self._calc_ema(closes, fast_len)
+        ema_slow_val = self._calc_ema(closes, slow_len)
+        atr_val = self._calc_atr(parsed, atr_period)
+        if ema_fast_val is None or ema_slow_val is None or atr_val is None:
+            return None
+        metrics = {
+            "ema_fast": ema_fast_val,
+            "ema_slow": ema_slow_val,
+            "atr": atr_val,
+            "price": closes[-1],
+        }
+        self._regime_cache[key] = (now, metrics)
+        return metrics
+
     async def get_wallet_balance(self, account_type: str = "UNIFIED") -> Dict[str, Any]:
         """지갑 잔고를 조회한다."""
         endpoint = "/v5/account/wallet-balance"
@@ -362,6 +439,23 @@ class BybitClient:
         for price in closes[period:]:
             ema = (price - ema) * alpha + ema
         return ema
+
+    @staticmethod
+    def _calc_atr(candles: list[dict], period: int) -> Optional[float]:
+        """단순 ATR 계산(SMA 기반)."""
+        if period <= 0 or len(candles) < period + 1:
+            return None
+        prev_close = candles[0]["close"]
+        trs = []
+        for c in candles[1:]:
+            high = c["high"]
+            low = c["low"]
+            tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
+            trs.append(tr)
+            prev_close = c["close"]
+        if len(trs) < period:
+            return None
+        return sum(trs[-period:]) / period
 
 
 async def main_debug() -> None:

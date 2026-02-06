@@ -159,6 +159,22 @@ class Backtester:
             ema = (price - ema) * alpha + ema
         return ema
 
+    @staticmethod
+    def _calc_atr(candles: List[dict], period: int) -> Optional[float]:
+        if period <= 0 or len(candles) < period + 1:
+            return None
+        prev_close = candles[0]["close"]
+        trs: List[float] = []
+        for c in candles[1:]:
+            high = c["high"]
+            low = c["low"]
+            tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
+            trs.append(tr)
+            prev_close = c["close"]
+        if len(trs) < period:
+            return None
+        return sum(trs[-period:]) / period
+
     async def _simulate(self, symbol: str, candles: List[dict]) -> None:
         """캔들을 순회하며 시그널/포지션/손익을 계산(TP는 롱/숏 분리 설정 반영)."""
         side: Optional[str] = None
@@ -173,6 +189,7 @@ class Backtester:
         sum_volume = 0.0
         sum_turnover = 0.0
         tf = self.settings.strategy.trend_filter
+        reg = self.settings.strategy.regime
         sc = self.settings.strategy.signal_confirm
         sc_window = max(1, int(sc.window)) if sc.enabled else 0
         sc_required = max(1, int(sc.required)) if sc.enabled else 0
@@ -181,7 +198,10 @@ class Backtester:
         trend_minutes = self._interval_to_minutes(tf.ema_interval) if tf.enabled else None
         base_minutes = self._interval_to_minutes(self.settings.strategy.band.candle_interval) if tf.enabled else None
         use_trend = bool(tf.enabled and trend_minutes and base_minutes and trend_minutes % base_minutes == 0)
-        if tf.enabled and not use_trend:
+        if reg.enabled and use_trend:
+            use_trend = False
+            logger.info("[BT] 레짐 모드 활성화: 추세 필터는 무시됩니다.")
+        if tf.enabled and not use_trend and not reg.enabled:
             logger.warning("[BT] 추세 필터 비활성화: interval 조합이 지원되지 않습니다.")
         trend_ms = (trend_minutes or 0) * 60 * 1000
         trend_bucket = None
@@ -189,6 +209,20 @@ class Backtester:
         prev_trend_close: Optional[float] = None
         trend_ema_fast: Optional[float] = None
         trend_ema_slow: Optional[float] = None
+        regime_minutes = self._interval_to_minutes(reg.interval) if reg.enabled else None
+        base_minutes_reg = (
+            self._interval_to_minutes(self.settings.strategy.band.candle_interval) if reg.enabled else None
+        )
+        use_regime = bool(reg.enabled and regime_minutes and base_minutes_reg and regime_minutes % base_minutes_reg == 0)
+        if reg.enabled and not use_regime:
+            logger.warning("[BT] 레짐 모드 비활성화: interval 조합이 지원되지 않습니다.")
+        regime_ms = (regime_minutes or 0) * 60 * 1000
+        regime_bucket = None
+        regime_candle: Optional[dict] = None
+        regime_candles: List[dict] = []
+        regime_ema_fast: Optional[float] = None
+        regime_ema_slow: Optional[float] = None
+        regime_atr: Optional[float] = None
 
         for c in candles:
             if use_trend:
@@ -205,6 +239,43 @@ class Backtester:
                 else:
                     trend_ema_fast = None
                     trend_ema_slow = None
+
+            if use_regime:
+                bucket = c["start"] // regime_ms
+                if regime_bucket is None:
+                    regime_bucket = bucket
+                    regime_candle = {
+                        "open": c["open"],
+                        "high": c["high"],
+                        "low": c["low"],
+                        "close": c["close"],
+                    }
+                elif bucket != regime_bucket:
+                    if regime_candle:
+                        regime_candles.append(regime_candle)
+                        if len(regime_candles) > reg.lookback:
+                            regime_candles.pop(0)
+                    regime_bucket = bucket
+                    regime_candle = {
+                        "open": c["open"],
+                        "high": c["high"],
+                        "low": c["low"],
+                        "close": c["close"],
+                    }
+                elif regime_candle:
+                    regime_candle["high"] = max(regime_candle["high"], c["high"])
+                    regime_candle["low"] = min(regime_candle["low"], c["low"])
+                    regime_candle["close"] = c["close"]
+
+                if len(regime_candles) >= max(reg.ema_fast, reg.ema_slow, reg.atr_period + 1):
+                    regime_closes = [rc["close"] for rc in regime_candles]
+                    regime_ema_fast = self._calc_ema(regime_closes, reg.ema_fast)
+                    regime_ema_slow = self._calc_ema(regime_closes, reg.ema_slow)
+                    regime_atr = self._calc_atr(regime_candles, reg.atr_period)
+                else:
+                    regime_ema_fast = None
+                    regime_ema_slow = None
+                    regime_atr = None
 
             close = c["close"]
             volume = float(c.get("volume") or 0.0)
@@ -227,7 +298,36 @@ class Backtester:
             else:
                 if local_vwap:
                     ticker["vwap"] = local_vwap
-            signal = self.strategy.evaluate(ticker)
+            vwap_signal = self.strategy.evaluate(ticker)
+            signal = vwap_signal
+            if use_regime and regime_ema_fast is not None and regime_ema_slow is not None and regime_atr is not None:
+                price_ref = regime_candles[-1]["close"]
+                ema_spread = abs(regime_ema_fast - regime_ema_slow) / price_ref
+                atr_pct = regime_atr / price_ref
+                if ema_spread >= reg.ema_spread_trend_pct and atr_pct >= reg.atr_trend_pct:
+                    regime_state = "trend"
+                elif ema_spread <= reg.ema_spread_range_pct and atr_pct <= reg.atr_range_pct:
+                    regime_state = "range"
+                else:
+                    regime_state = "neutral"
+                if regime_ema_fast > regime_ema_slow:
+                    trend_signal = Signal.LONG_ENTRY
+                elif regime_ema_fast < regime_ema_slow:
+                    trend_signal = Signal.SHORT_ENTRY
+                else:
+                    trend_signal = Signal.NONE
+                if regime_state == "trend":
+                    signal = trend_signal
+                elif regime_state == "range":
+                    signal = vwap_signal
+                else:
+                    behavior = (reg.neutral_behavior or "vwap").lower()
+                    if behavior == "trend":
+                        signal = trend_signal
+                    elif behavior == "none":
+                        signal = Signal.NONE
+                    else:
+                        signal = vwap_signal
             ts_str = self._fmt_time(c["start"])
             if signal_hist is not None:
                 signal_hist.append(signal)
