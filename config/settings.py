@@ -57,6 +57,23 @@ class SignalConfirmSettings(BaseModel):
     required: int = Field(default=2, description="Minimum matches in window to allow entry")
 
 
+class RegimeSettings(BaseModel):
+    """시장 레짐(추세/횡보) 판별 설정."""
+
+    enabled: bool = Field(default=False, description="Enable regime-based strategy switching")
+    interval: str = Field(default="1h", description="Regime evaluation interval")
+    ema_fast: int = Field(default=20, description="Fast EMA length for regime")
+    ema_slow: int = Field(default=50, description="Slow EMA length for regime")
+    atr_period: int = Field(default=14, description="ATR period for regime")
+    lookback: int = Field(default=200, description="Candles used for regime calculation")
+    refresh_sec: int = Field(default=300, description="Regime metrics refresh interval seconds")
+    ema_spread_trend_pct: float = Field(default=0.002, description="Trend threshold by EMA spread (fraction)")
+    atr_trend_pct: float = Field(default=0.003, description="Trend threshold by ATR/price (fraction)")
+    ema_spread_range_pct: float = Field(default=0.001, description="Range threshold by EMA spread (fraction)")
+    atr_range_pct: float = Field(default=0.002, description="Range threshold by ATR/price (fraction)")
+    neutral_behavior: str = Field(default="vwap", description="vwap | trend | none for neutral regime")
+
+
 class StrategySettings(BaseModel):
     anchor: AnchorSettings = Field(default_factory=AnchorSettings)
     band: BandSettings = Field(default_factory=BandSettings)
@@ -79,6 +96,7 @@ class StrategySettings(BaseModel):
     stop_loss_short: float = Field(default=0.01, description="Hard stop for shorts (fraction, 0.01=1%)")
     trend_filter: TrendFilterSettings = Field(default_factory=TrendFilterSettings)
     signal_confirm: SignalConfirmSettings = Field(default_factory=SignalConfirmSettings)
+    regime: RegimeSettings = Field(default_factory=RegimeSettings)
 
 
 class ExchangeSettings(BaseModel):

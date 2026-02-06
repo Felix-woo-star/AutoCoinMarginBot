@@ -18,3 +18,29 @@ strategy:
   move_stop_to_entry_after_partial: true
   break_even_buffer_pct: 0.001
 ```
+
+## 레짐 기반 전략(정교 버전)
+시장 상태를 추세/횡보로 분류해 전략을 자동 전환합니다.
+
+- 추세(trend): EMA 방향에 따라 추세 추종
+- 횡보(range): VWAP 프리미엄/디스카운트 기준 진입
+- 중립(neutral): `neutral_behavior`로 동작 선택
+
+```yaml
+strategy:
+  regime:
+    enabled: true
+    interval: 1h
+    ema_fast: 20
+    ema_slow: 50
+    atr_period: 14
+    lookback: 200
+    refresh_sec: 300
+    ema_spread_trend_pct: 0.002
+    atr_trend_pct: 0.003
+    ema_spread_range_pct: 0.001
+    atr_range_pct: 0.002
+    neutral_behavior: vwap # vwap | trend | none
+```
+
+레짐 모드가 켜져 있으면 `trend_filter`는 중복 방지를 위해 무시됩니다.

@@ -55,6 +55,9 @@ class Trader:
         self._trend_block_ts: Dict[str, float] = {}
         self._trend_warn_ts: Dict[str, float] = {}
         self._trend_ema_cache: Dict[str, Tuple[float, float, float]] = {}
+        self._regime_warn_ts: Dict[str, float] = {}
+        self._regime_state: Dict[str, str] = {}
+        self._regime_log_ts: Dict[str, float] = {}
         self._signal_history: Dict[str, deque[Signal]] = {}
 
     async def handle_ticker(self, ticker: dict) -> None:
@@ -92,7 +95,8 @@ class Trader:
             ticker = dict(ticker)
             ticker["emaFast"] = ema_pair[0]
             ticker["emaSlow"] = ema_pair[1]
-        signal = self.strategy.evaluate(ticker)
+        vwap_signal = self.strategy.evaluate(ticker)
+        signal = await self._select_regime_signal(symbol, price, vwap_signal)
         self._record_signal(symbol, signal)
         if pos.is_flat:
             if signal == Signal.LONG_ENTRY:
@@ -169,6 +173,8 @@ class Trader:
 
     async def _trend_allows(self, symbol: str, signal: Signal) -> bool:
         """EMA 크로스 추세 필터로 진입을 제한한다."""
+        if self.settings.strategy.regime.enabled:
+            return True
         tf = self.settings.strategy.trend_filter
         if not tf.enabled:
             return True
@@ -247,6 +253,124 @@ class Trader:
             self._trend_warn_ts[symbol] = now
             logger.warning("[추세필터] EMA 조회 실패로 진입을 보류합니다 symbol={}", symbol)
         return None
+
+    async def _get_regime_metrics(self, symbol: str) -> Optional[Dict[str, float]]:
+        reg = self.settings.strategy.regime
+        if not reg.enabled:
+            return None
+        metrics = await self.client.get_regime_metrics(
+            symbol=symbol,
+            interval=reg.interval,
+            ema_fast=reg.ema_fast,
+            ema_slow=reg.ema_slow,
+            atr_period=reg.atr_period,
+            lookback=reg.lookback,
+            refresh_sec=reg.refresh_sec,
+        )
+        if metrics:
+            return metrics
+        now = time.time()
+        last_ts = self._regime_warn_ts.get(symbol, 0.0)
+        if now - last_ts >= 300:
+            self._regime_warn_ts[symbol] = now
+            logger.warning("[레짐] 지표 조회 실패로 VWAP 전략만 사용합니다 symbol={}", symbol)
+        return None
+
+    def _classify_regime(
+        self,
+        price: float,
+        ema_fast: float,
+        ema_slow: float,
+        atr: float,
+    ) -> Tuple[str, float, float]:
+        reg = self.settings.strategy.regime
+        price_ref = price if price > 0 else 1.0
+        ema_spread = abs(ema_fast - ema_slow) / price_ref
+        atr_pct = atr / price_ref
+        if ema_spread >= reg.ema_spread_trend_pct and atr_pct >= reg.atr_trend_pct:
+            regime = "trend"
+        elif ema_spread <= reg.ema_spread_range_pct and atr_pct <= reg.atr_range_pct:
+            regime = "range"
+        else:
+            regime = "neutral"
+        return regime, ema_spread, atr_pct
+
+    async def _select_regime_signal(self, symbol: str, price: float, vwap_signal: Signal) -> Signal:
+        reg = self.settings.strategy.regime
+        if not reg.enabled:
+            return vwap_signal
+        metrics = await self._get_regime_metrics(symbol)
+        if not metrics:
+            return vwap_signal
+        try:
+            ema_fast = float(metrics["ema_fast"])
+            ema_slow = float(metrics["ema_slow"])
+            atr = float(metrics["atr"])
+            price_ref = float(metrics.get("price") or price or 0.0)
+        except (TypeError, ValueError, KeyError):
+            return vwap_signal
+        if price_ref <= 0:
+            return vwap_signal
+
+        regime, ema_spread, atr_pct = self._classify_regime(price_ref, ema_fast, ema_slow, atr)
+        if ema_fast > ema_slow:
+            trend_signal = Signal.LONG_ENTRY
+        elif ema_fast < ema_slow:
+            trend_signal = Signal.SHORT_ENTRY
+        else:
+            trend_signal = Signal.NONE
+
+        if regime == "trend":
+            signal = trend_signal
+            strategy_label = "trend"
+        elif regime == "range":
+            signal = vwap_signal
+            strategy_label = "vwap"
+        else:
+            behavior = (reg.neutral_behavior or "vwap").lower()
+            if behavior == "trend":
+                signal = trend_signal
+                strategy_label = "trend"
+            elif behavior == "none":
+                signal = Signal.NONE
+                strategy_label = "none"
+            else:
+                signal = vwap_signal
+                strategy_label = "vwap"
+
+        self._log_regime(symbol, regime, strategy_label, ema_fast, ema_slow, ema_spread, atr, atr_pct, price_ref)
+        return signal
+
+    def _log_regime(
+        self,
+        symbol: str,
+        regime: str,
+        strategy_label: str,
+        ema_fast: float,
+        ema_slow: float,
+        ema_spread: float,
+        atr: float,
+        atr_pct: float,
+        price: float,
+    ) -> None:
+        now = time.time()
+        last_state = self._regime_state.get(symbol)
+        last_ts = self._regime_log_ts.get(symbol, 0.0)
+        if regime != last_state or now - last_ts >= 300:
+            self._regime_state[symbol] = regime
+            self._regime_log_ts[symbol] = now
+            logger.info(
+                "[레짐] symbol={} regime={} strategy={} ema_fast={:.6f} ema_slow={:.6f} spread={:.6f} atr={:.6f} atr_pct={:.6f} price={:.4f}",
+                symbol,
+                regime,
+                strategy_label,
+                ema_fast,
+                ema_slow,
+                ema_spread,
+                atr,
+                atr_pct,
+                price,
+            )
 
     async def _open_position(self, symbol: str, side: str, price: float) -> None:
         """시장가로 신규 진입."""
