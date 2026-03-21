@@ -10,6 +10,7 @@ import sys
 from itertools import product
 from typing import List, Tuple
 
+import yaml
 from loguru import logger
 
 from config import load_settings
@@ -68,15 +69,16 @@ def _summarize(backtester: Backtester, start_eq: float) -> dict:
     }
 
 
-async def _run_case(settings, k: float, interval: str, lookback: int) -> dict:
+async def _run_case(settings, k: float, interval: str, lookback: int, max_dd_pct: float) -> dict:
     settings.strategy.band.k = k
     settings.strategy.band.candle_interval = interval
     settings.strategy.band.vwap_lookback = lookback
+    settings.strategy.max_drawdown_pct = max_dd_pct
     strategy = AnchoredVWAPStrategy(settings)
     backtester = Backtester(settings, strategy, alerter=None)
     await backtester.run()
     summary = _summarize(backtester, settings.initial_balance_usdt)
-    summary.update({"k": k, "interval": interval, "lookback": lookback})
+    summary.update({"k": k, "interval": interval, "lookback": lookback, "max_dd_pct": max_dd_pct})
     return summary
 
 
@@ -96,21 +98,24 @@ async def _run_all(args: argparse.Namespace) -> Tuple[List[dict], int]:
     lookbacks = _parse_int_list(args.vwap_lookback) if args.vwap_lookback else [
         base_settings.strategy.band.vwap_lookback
     ]
+    max_dd_pct_values = _parse_float_list(args.max_drawdown_pct) if args.max_drawdown_pct else [
+        base_settings.strategy.max_drawdown_pct
+    ]
 
-    total = len(k_values) * len(intervals) * len(lookbacks)
+    total = len(k_values) * len(intervals) * len(lookbacks) * len(max_dd_pct_values)
     print(
-        f"Grid size: k={len(k_values)} intervals={len(intervals)} lookbacks={len(lookbacks)} total={total}",
+        f"Grid size: k={len(k_values)} intervals={len(intervals)} lookbacks={len(lookbacks)} max_dd_pct={len(max_dd_pct_values)} total={total}",
         flush=True,
     )
     results = []
     idx = 0
-    for k, interval, lookback in product(k_values, intervals, lookbacks):
+    for k, interval, lookback, max_dd_pct in product(k_values, intervals, lookbacks, max_dd_pct_values):
         idx += 1
         print(f"Running case {idx}/{total}...", flush=True)
         settings = base_settings.model_copy(deep=True)
-        result = await _run_case(settings, k, interval, lookback)
+        result = await _run_case(settings, k, interval, lookback, max_dd_pct)
         print(
-            f"[{idx}/{total}] k={k} interval={interval} lookback={lookback} "
+            f"[{idx}/{total}] k={k} interval={interval} lookback={lookback} max_dd_pct={max_dd_pct} "
             f"trades={result['trades']} return={result['return_pct']:.2f}% win={result['win_rate']:.2f}%",
             flush=True,
         )
@@ -122,7 +127,7 @@ def _print_table(rows: List[dict], top: int) -> None:
     if not rows or top <= 0:
         print("\nNo results to display.", flush=True)
         return
-    headers = ["k", "interval", "lookback", "trades", "win_rate", "return_pct", "max_dd", "final_cash"]
+    headers = ["k", "interval", "lookback", "max_dd_pct", "trades", "win_rate", "return_pct", "max_dd", "final_cash"]
     formatted = []
     for r in rows[:top]:
         formatted.append(
@@ -130,6 +135,7 @@ def _print_table(rows: List[dict], top: int) -> None:
                 f"{r['k']:.6f}",
                 r["interval"],
                 str(r["lookback"]),
+                f"{r['max_dd_pct']:.2f}",
                 str(r["trades"]),
                 f"{r['win_rate']:.2f}",
                 f"{r['return_pct']:.2f}",
@@ -153,7 +159,7 @@ def _write_csv(rows: List[dict], path: str) -> None:
     with open(path, "w", newline="", encoding="utf-8") as fh:
         writer = csv.DictWriter(
             fh,
-            fieldnames=["k", "interval", "lookback", "trades", "win_rate", "return_pct", "max_dd", "final_cash"],
+            fieldnames=["k", "interval", "lookback", "max_dd_pct", "trades", "win_rate", "return_pct", "max_dd", "final_cash"],
         )
         writer.writeheader()
         writer.writerows(rows)
@@ -164,12 +170,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", type=str, default="config.backtest.yaml", help="Base config path")
     parser.add_argument("--k", type=str, default=None, help="Comma list or range: start:end:step")
     parser.add_argument("--candle-interval", type=str, default=None, help="Comma list (e.g., 5m,15m,30m)")
-    parser.add_argument("--vwap-lookback", type=str, default=None, help="Comma list or range: start:end:step")
+    parser.add_argument("--max-drawdown-pct", type=str, default=None, help="Comma list or range: start:end:step")
     parser.add_argument("--backtest-limit", type=int, default=None, help="Override backtest_limit")
     parser.add_argument("--use-api-vwap", action="store_true", help="Use HLC avg as API vwap proxy")
     parser.add_argument("--top", type=int, default=10, help="How many top rows to display")
     parser.add_argument("--out", type=str, default=None, help="Write full results to CSV")
-    parser.add_argument("--log-level", type=str, default="WARNING", help="Logger level for backtest")
+    parser.add_argument("--apply-best", action="store_true", help="Apply best params to config.yaml")
     return parser.parse_args()
 
 
@@ -187,6 +193,32 @@ def main() -> None:
     if args.out:
         _write_csv(results_sorted, args.out)
         print(f"\nSaved CSV: {args.out}", flush=True)
+
+    # 최적 파라미터 저장
+    if results_sorted:
+        best = results_sorted[0]
+        print(f"\nBest params: k={best['k']:.6f}, interval={best['interval']}, lookback={best['lookback']}, max_dd_pct={best['max_dd_pct']:.2f}", flush=True)
+        if args.apply_best:
+            # config.yaml에 적용
+            config_path = args.config
+            try:
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    config_data = yaml.safe_load(f) or {}
+                if 'strategy' not in config_data:
+                    config_data['strategy'] = {}
+                if 'band' not in config_data['strategy']:
+                    config_data['strategy']['band'] = {}
+                config_data['strategy']['band']['k'] = round(best['k'], 6)
+                config_data['strategy']['band']['candle_interval'] = best['interval']
+                config_data['strategy']['band']['vwap_lookback'] = best['lookback']
+                config_data['strategy']['max_drawdown_pct'] = round(best['max_dd_pct'], 2)
+                with open(config_path, 'w', encoding='utf-8') as f:
+                    yaml.dump(config_data, f, default_flow_style=False, sort_keys=False)
+                print(f"Applied best params to {config_path}", flush=True)
+            except Exception as e:
+                print(f"Failed to apply best params: {e}", flush=True)
+        else:
+            print("To apply best params, use --apply-best flag.")
 
 
 if __name__ == "__main__":

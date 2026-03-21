@@ -12,6 +12,7 @@ from datetime import datetime
 from typing import Dict, List, Optional
 
 import httpx
+import matplotlib.pyplot as plt
 from loguru import logger
 
 from alerts import TelegramAlerter
@@ -509,7 +510,7 @@ class Backtester:
         return round(self.settings.order_size_usdt / price, 6)
 
     def _report(self) -> None:
-        """간단 성과 리포트 출력."""
+        """간단 성과 리포트 출력 및 파일 저장."""
         if not self.trades:
             logger.warning("백테스트 결과: 체결된 거래가 없습니다.")
             return
@@ -528,6 +529,56 @@ class Backtester:
             logger.debug(
                 f"체결 {t.side} {t.symbol} 진입={t.entry_price:.4f} 청산={t.exit_price:.4f} 수량={t.qty:.4f} PnL={t.pnl:.4f} 부분익절여부={t.partial}"
             )
+
+        # 간단한 최종 리포트 생성
+        report_content = f"""
+=== AutoCoinMarginBot Backtest Report ===
+Date: {datetime.now().isoformat()}
+Symbol: {self.settings.symbols[0]}
+Strategy: Anchored VWAP
+Parameters:
+  k: {self.settings.strategy.band.k}
+  candle_interval: {self.settings.strategy.band.candle_interval}
+  vwap_lookback: {self.settings.strategy.band.vwap_lookback}
+  max_drawdown_pct: {self.settings.strategy.max_drawdown_pct}
+  take_profit_move_long: {self.settings.strategy.take_profit_move_long}
+  stop_loss_long: {self.settings.strategy.stop_loss_long}
+
+Results:
+  Total Trades: {len(self.trades)}
+  Win Rate: {win_rate:.2f}%
+  Total PnL: {total_pnl:.2f} USDT
+  Total Return: {total_return_pct:.2f}%
+  Max Drawdown: {max_dd:.2f}
+  Final Cash: {self.cash_balance:.2f} USDT
+
+Top 5 Trades:
+"""
+        for i, t in enumerate(self.trades[:5]):
+            report_content += f"{i+1}. {t.side} {t.symbol} Entry:{t.entry_price:.4f} Exit:{t.exit_price:.4f} PnL:{t.pnl:.4f}\n"
+
+        # 파일 저장
+        report_path = "backtest_report.txt"
+        with open(report_path, "w", encoding="utf-8") as f:
+            f.write(report_content)
+        logger.info(f"최종 리포트 저장됨: {report_path}")
+
+        # Equity curve 그래프 생성
+        if self.equity_curve:
+            plt.figure(figsize=(10, 6))
+            plt.plot(self.equity_curve, label='Equity Curve')
+            plt.title('Backtest Equity Curve')
+            plt.xlabel('Time Steps')
+            plt.ylabel('Equity (USDT)')
+            plt.grid(True)
+            plt.legend()
+            chart_path = "backtest_equity_chart.png"
+            plt.savefig(chart_path)
+            plt.close()
+            logger.info(f"Equity 차트 저장됨: {chart_path}")
+            # 리포트에 차트 경로 추가
+            with open(report_path, "a", encoding="utf-8") as f:
+                f.write(f"\nEquity Chart: {chart_path}\n")
 
         # 결과를 메모리에 유지해 알림에 사용
         self._summary = {

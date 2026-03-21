@@ -10,8 +10,30 @@ wheels/
 .venv
 .python-version
 .uvcache
+
+# Logs and temporary files
 logs/
-.env
+*.log
+backtest_report.txt
+backtest_equity_chart.png
+tune_results.csv
+
+# Configuration files (keep example)
 config.yaml
 config.backtest.yaml
-tune_results.csv
+.env
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Data and cache
+.cache/
+*.tmp

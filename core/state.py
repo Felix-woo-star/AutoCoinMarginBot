@@ -56,9 +56,15 @@ class Trader:
         self._trend_warn_ts: Dict[str, float] = {}
         self._trend_ema_cache: Dict[str, Tuple[float, float, float]] = {}
         self._regime_warn_ts: Dict[str, float] = {}
+        self._equity_peak: float = self.cash_balance
+        self._max_drawdown_pct: float = 0.0
+        self._drawdown_block_ts: Dict[str, float] = {}
         self._regime_state: Dict[str, str] = {}
         self._regime_log_ts: Dict[str, float] = {}
         self._signal_history: Dict[str, deque[Signal]] = {}
+        self._daily_loss_start_ts: float = time.time()
+        self._daily_loss_accumulated: float = 0.0
+        self._daily_loss_block_ts: Dict[str, float] = {}
 
     async def handle_ticker(self, ticker: dict) -> None:
         """티커 1건을 받아 포지션 상태를 갱신한다."""
@@ -69,6 +75,69 @@ class Trader:
         price = float(ticker.get("lastPrice") or ticker.get("markPrice") or 0.0)
         if not price:
             return
+
+        # Drawdown-based risk stop: 최고고점 대비 허용폭 초과 시 포지션 청산 및 신규 진입 차단
+        if self.settings.strategy.max_drawdown_pct > 0:
+            equity = self._calculate_equity(price)
+            drawdown = self._update_drawdown(equity)
+            if drawdown >= self.settings.strategy.max_drawdown_pct:
+                if not pos.is_flat:
+                    await self._close_position(pos, price, reason=f"Max drawdown exceeded {drawdown*100:.2f}%")
+                now_ts = time.time()
+                block_until = self._drawdown_block_ts.get(symbol, 0.0)
+                if now_ts >= block_until:
+                    self._drawdown_block_ts[symbol] = now_ts + 600
+                    logger.warning(
+                        "[DD 방어] symbol={} drawdown={:.2f}%, 신규 진입 차단 10분",
+                        symbol,
+                        drawdown * 100,
+                    )
+                    await self.alerter.send(
+                        f"🚨 *CRITICAL RISK ALERT* 🚨\n"
+                        f"Symbol: {symbol}\n"
+                        f"Drawdown: {drawdown*100:.2f}% (limit: {self.settings.strategy.max_drawdown_pct*100:.1f}%)\n"
+                        f"Action: All entries blocked for 10 minutes\n"
+                        f"Position closed if open. Monitor closely!"
+                    )
+                return
+            # Block 상태인 경우 10분 종료까지 신규 진입 차단
+            if self._drawdown_block_ts.get(symbol, 0.0) > time.time():
+                return
+
+        # Daily loss check: 일일 누적 손실 초과 시 포지션 청산 및 진입 차단
+        if self.settings.strategy.daily_loss_pct > 0:
+            now_ts = time.time()
+            # 하루가 지났으면 리셋 (86400초 = 24시간)
+            if now_ts - self._daily_loss_start_ts >= 86400:
+                self._daily_loss_start_ts = now_ts
+                self._daily_loss_accumulated = 0.0
+                logger.info("[일일 손실] 리셋됨")
+            # 손실 누적 (포지션 PnL 계산)
+            daily_pnl = self._calculate_daily_pnl(price)
+            if daily_pnl < 0:
+                self._daily_loss_accumulated += abs(daily_pnl)
+                if self._daily_loss_accumulated >= self.settings.strategy.daily_loss_pct * self.settings.initial_balance_usdt:
+                    if not pos.is_flat:
+                        await self._close_position(pos, price, reason=f"Daily loss exceeded {self._daily_loss_accumulated:.2f}")
+                    block_until = self._daily_loss_block_ts.get(symbol, 0.0)
+                    if now_ts >= block_until:
+                        self._daily_loss_block_ts[symbol] = now_ts + 3600  # 1시간 차단
+                        logger.warning(
+                            "[일일 손실 방어] symbol={} daily_loss={:.2f}, 신규 진입 차단 1시간",
+                            symbol,
+                            self._daily_loss_accumulated,
+                        )
+                        await self.alerter.send(
+                            f"⚠️ *DAILY LOSS ALERT* ⚠️\n"
+                            f"Symbol: {symbol}\n"
+                            f"Daily Loss: {self._daily_loss_accumulated:.2f} (limit: {self.settings.strategy.daily_loss_pct * self.settings.initial_balance_usdt:.2f})\n"
+                            f"Action: Entries blocked for 1 hour\n"
+                            f"Position closed if open."
+                        )
+                    return
+            # Block 상태인 경우 1시간 종료까지 신규 진입 차단
+            if self._daily_loss_block_ts.get(symbol, 0.0) > time.time():
+                return
 
         use_api_vwap = self.settings.strategy.band.use_api_vwap
         api_vwap = ticker.get("avgPrice") or ticker.get("vwap")
@@ -149,10 +218,12 @@ class Trader:
             expected_qty = 0.0
             if entry_price > 0:
                 expected_qty = round(self.settings.order_size_usdt / entry_price, 6)
+
+            # Sync partial_taken based on whether position size is below expected initial size.
+            # 이 값은 재시작된 세션에서 TP1 이후에도 상태를 유지하기 위함입니다.
             partial_taken = False
             if expected_qty > 0:
-                threshold = expected_qty * (1 - self.settings.strategy.partial_take_profit_pct) + 1e-9
-                partial_taken = size <= threshold
+                partial_taken = size < expected_qty - 1e-9
 
             pos = self.positions[symbol]
             pos.side = side
@@ -170,6 +241,39 @@ class Trader:
             )
 
         await self._log_wallet_balance(note="sync")
+
+    def _calculate_equity(self, price: float) -> float:
+        """현재 추정 자산가치를 계산한다 (현금 + 포지션 평가액)."""
+        equity = self.cash_balance
+        for pos in self.positions.values():
+            if pos.is_flat or pos.size <= 0.0:
+                continue
+            if pos.side == "LONG":
+                equity += pos.size * price
+            else:
+                equity -= pos.size * price
+        return equity
+
+    def _calculate_daily_pnl(self, price: float) -> float:
+        """현재 포지션의 미실현 손익을 계산 (일일 손실 체크용)."""
+        pnl = 0.0
+        for pos in self.positions.values():
+            if pos.is_flat or pos.size <= 0.0 or not pos.entry_price:
+                continue
+            if pos.side == "LONG":
+                pnl += (price - pos.entry_price) * pos.size
+            else:
+                pnl += (pos.entry_price - price) * pos.size
+        return pnl
+
+    def _update_drawdown(self, equity: float) -> float:
+        if equity > self._equity_peak:
+            self._equity_peak = equity
+        if self._equity_peak <= 0.0:
+            return 0.0
+        drawdown = (self._equity_peak - equity) / self._equity_peak
+        self._max_drawdown_pct = max(self._max_drawdown_pct, drawdown)
+        return drawdown
 
     async def _trend_allows(self, symbol: str, signal: Signal) -> bool:
         """EMA 크로스 추세 필터로 진입을 제한한다."""

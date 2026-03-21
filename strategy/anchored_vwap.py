@@ -44,6 +44,41 @@ class AnchoredVWAPStrategy:
         self.ctx.anchor_vwap = anchor_vwap
         self.ctx.anchor_label = label
 
+    def _initialize_anchor(self, ticker: Dict[str, Any]) -> float:
+        settings_anchor = self.settings.strategy.anchor
+
+        if settings_anchor.anchor_type == "manual" and settings_anchor.manual_price and settings_anchor.manual_price > 0:
+            self.reset_anchor(settings_anchor.manual_price, "manual")
+            return settings_anchor.manual_price
+
+        # Bybit 티커는 open24h 등을 제공할 수 있으므로 우선 사용
+        open_price = None
+        if settings_anchor.anchor_type == "daily_open":
+            open_price = ticker.get("open24h") or ticker.get("openPrice") or ticker.get("open")
+
+        if open_price is not None:
+            try:
+                open_price_f = float(open_price)
+                if open_price_f > 0:
+                    self.reset_anchor(open_price_f, settings_anchor.anchor_type)
+                    return open_price_f
+            except (TypeError, ValueError):
+                pass
+
+        # Fallback: VWAP이 있으면 VWAP, 없으면 최근 가격
+        vwap_fallback = ticker.get("vwap") or ticker.get("avgPrice") or ticker.get("lastPrice") or ticker.get("markPrice")
+        try:
+            vwap_fallback = float(vwap_fallback or 0.0)
+        except (TypeError, ValueError):
+            vwap_fallback = 0.0
+        if vwap_fallback > 0:
+            self.reset_anchor(vwap_fallback, "fallback")
+            return vwap_fallback
+
+        # 마지막 예외 값
+        self.reset_anchor(1.0, "default")
+        return 1.0
+
     def evaluate(self, ticker: Dict[str, Any]) -> Signal:
         """VWAP/avgPrice가 포함된 티커로 시그널을 계산한다."""
         symbol = ticker.get("symbol") or "UNKNOWN"
@@ -106,14 +141,17 @@ class AnchoredVWAPStrategy:
         if not price or not vwap:
             return Signal.NONE
 
-        # 앵커 미설정 시 초기 VWAP을 앵커로 설정
         if self.ctx.anchor_vwap is None:
-            self.reset_anchor(anchor_vwap=vwap, label="initial")
+            self._initialize_anchor(ticker)
 
-        premium = (price - vwap) / vwap
+        anchor_vwap = self.ctx.anchor_vwap or vwap
+        if anchor_vwap <= 0:
+            anchor_vwap = vwap
+
+        premium = (price - anchor_vwap) / anchor_vwap
         band = self.settings.strategy.band
 
-        # 기본 방향성: VWAP 이상은 강세, 이하는 약세로 해석.
+        # 기본 방향성: 앵커 가격 대비 프리미엄/디스카운트로 추세 판단
         # 밴드 폭 k는 노이즈를 줄이기 위한 최소 임계값 역할.
         threshold = band.k if band.k < 1 else band.k / 100.0
 
