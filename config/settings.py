@@ -94,6 +94,8 @@ class StrategySettings(BaseModel):
     )
     stop_loss_long: float = Field(default=0.01, description="Hard stop for longs (fraction, 0.01=1%)")
     stop_loss_short: float = Field(default=0.01, description="Hard stop for shorts (fraction, 0.01=1%)")
+    max_drawdown_pct: float = Field(default=0.15, description="Max drawdown from peak allowed for entries (fraction, 0.15=15%)")
+    daily_loss_pct: float = Field(default=0.05, description="Max daily loss allowed (fraction, 0.05=5%)")
     trend_filter: TrendFilterSettings = Field(default_factory=TrendFilterSettings)
     signal_confirm: SignalConfirmSettings = Field(default_factory=SignalConfirmSettings)
     regime: RegimeSettings = Field(default_factory=RegimeSettings)
