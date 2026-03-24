@@ -28,6 +28,10 @@ async def run_bot(settings: AppSettings, iterations: int, alerter: TelegramAlert
     logger.info(
         f"설정 로드 완료 (dry_run={settings.dry_run}, env={settings.exchange.env}, iterations={iter_info})"
     )
+    if settings.dry_run:
+        logger.warning("prod 모드가 dry-run으로 실행 중입니다. 실제 주문 전송을 원하면 --live로 실행하세요.")
+    else:
+        logger.info("prod 모드가 live 주문 전송으로 실행 중입니다.")
 
     strategy = AnchoredVWAPStrategy(settings)
     client = BybitClient(settings)
@@ -103,6 +107,7 @@ async def async_main() -> None:
     try:
         settings = load_settings(cfg_path)
         mode = (settings.mode or "dev").lower()
+        config_dry_run = settings.dry_run
         if mode == "prod":
             if args.live:
                 settings.dry_run = False  # type: ignore[pydantic-field]
@@ -113,7 +118,9 @@ async def async_main() -> None:
         alerter = TelegramAlerter(settings.telegram)
         # 시작 알림
         await alerter.send(
-            f"[시작] 모드={settings.mode} env={settings.exchange.env} dry_run={settings.dry_run} symbols={settings.symbols}"
+            f"[시작] 모드={settings.mode} env={settings.exchange.env} "
+            f"dry_run={settings.dry_run} config_dry_run={config_dry_run} "
+            f"live_flag={args.live} symbols={settings.symbols}"
         )
 
         if mode == "prod":

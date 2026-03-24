@@ -104,37 +104,9 @@ class Trader:
             if self._drawdown_block_ts.get(symbol, 0.0) > time.time():
                 return
 
-        # Daily loss check: 일일 누적 손실 초과 시 포지션 청산 및 진입 차단
+        # Daily loss check: 실현 손실 누적 기준으로 신규 진입을 차단한다.
         if self.settings.strategy.daily_loss_pct > 0:
-            now_ts = time.time()
-            # 하루가 지났으면 리셋 (86400초 = 24시간)
-            if now_ts - self._daily_loss_start_ts >= 86400:
-                self._daily_loss_start_ts = now_ts
-                self._daily_loss_accumulated = 0.0
-                logger.info("[일일 손실] 리셋됨")
-            # 손실 누적 (포지션 PnL 계산)
-            daily_pnl = self._calculate_daily_pnl(price)
-            if daily_pnl < 0:
-                self._daily_loss_accumulated += abs(daily_pnl)
-                if self._daily_loss_accumulated >= self.settings.strategy.daily_loss_pct * self.settings.initial_balance_usdt:
-                    if not pos.is_flat:
-                        await self._close_position(pos, price, reason=f"Daily loss exceeded {self._daily_loss_accumulated:.2f}")
-                    block_until = self._daily_loss_block_ts.get(symbol, 0.0)
-                    if now_ts >= block_until:
-                        self._daily_loss_block_ts[symbol] = now_ts + 3600  # 1시간 차단
-                        logger.warning(
-                            "[일일 손실 방어] symbol={} daily_loss={:.2f}, 신규 진입 차단 1시간",
-                            symbol,
-                            self._daily_loss_accumulated,
-                        )
-                        await self.alerter.send(
-                            f"⚠️ *DAILY LOSS ALERT* ⚠️\n"
-                            f"Symbol: {symbol}\n"
-                            f"Daily Loss: {self._daily_loss_accumulated:.2f} (limit: {self.settings.strategy.daily_loss_pct * self.settings.initial_balance_usdt:.2f})\n"
-                            f"Action: Entries blocked for 1 hour\n"
-                            f"Position closed if open."
-                        )
-                    return
+            self._roll_daily_loss_window()
             # Block 상태인 경우 1시간 종료까지 신규 진입 차단
             if self._daily_loss_block_ts.get(symbol, 0.0) > time.time():
                 return
@@ -254,17 +226,41 @@ class Trader:
                 equity -= pos.size * price
         return equity
 
-    def _calculate_daily_pnl(self, price: float) -> float:
-        """현재 포지션의 미실현 손익을 계산 (일일 손실 체크용)."""
-        pnl = 0.0
-        for pos in self.positions.values():
-            if pos.is_flat or pos.size <= 0.0 or not pos.entry_price:
-                continue
-            if pos.side == "LONG":
-                pnl += (price - pos.entry_price) * pos.size
-            else:
-                pnl += (pos.entry_price - price) * pos.size
-        return pnl
+    def _roll_daily_loss_window(self) -> None:
+        """24시간 경과 시 일일 손실 누적값을 리셋한다."""
+        now_ts = time.time()
+        if now_ts - self._daily_loss_start_ts >= 86400:
+            self._daily_loss_start_ts = now_ts
+            self._daily_loss_accumulated = 0.0
+            logger.info("[일일 손실] 리셋됨")
+
+    async def _register_realized_pnl(self, symbol: str, realized_pnl: float) -> None:
+        """실현 손익을 일일 손실 누적값에 반영하고 필요 시 진입을 차단한다."""
+        if self.settings.strategy.daily_loss_pct <= 0 or realized_pnl >= 0:
+            return
+        self._roll_daily_loss_window()
+        self._daily_loss_accumulated += abs(realized_pnl)
+        daily_limit = self.settings.strategy.daily_loss_pct * self.settings.initial_balance_usdt
+        if self._daily_loss_accumulated < daily_limit:
+            return
+
+        now_ts = time.time()
+        block_until = self._daily_loss_block_ts.get(symbol, 0.0)
+        if now_ts < block_until:
+            return
+
+        self._daily_loss_block_ts[symbol] = now_ts + 3600
+        logger.warning(
+            "[일일 손실 방어] symbol={} daily_loss={:.2f}, 신규 진입 차단 1시간",
+            symbol,
+            self._daily_loss_accumulated,
+        )
+        await self.alerter.send(
+            f"⚠️ *DAILY LOSS ALERT* ⚠️\n"
+            f"Symbol: {symbol}\n"
+            f"Daily Loss: {self._daily_loss_accumulated:.2f} (limit: {daily_limit:.2f})\n"
+            f"Action: Entries blocked for 1 hour"
+        )
 
     def _update_drawdown(self, equity: float) -> float:
         if equity > self._equity_peak:
@@ -574,6 +570,7 @@ class Trader:
             (price - pos.entry_price) * qty if pos.side == "LONG" else (pos.entry_price - price) * qty
         )
         self.cash_balance += pnl_realized
+        await self._register_realized_pnl(pos.symbol, pnl_realized)
         self.coin_balance[pos.symbol] += -qty if pos.side == "LONG" else qty
         logger.info(
             f"[부분익절] {pos.side} {pos.symbol} 수량={qty:.6f} 가격={price:.4f} 수익률={pnl_pct:.2f}% 사유={reason}"
@@ -603,6 +600,7 @@ class Trader:
             (price - pos.entry_price) * qty if pos.side == "LONG" else (pos.entry_price - price) * qty
         )
         self.cash_balance += pnl_realized
+        await self._register_realized_pnl(pos.symbol, pnl_realized)
         logger.info(
             f"[청산] {pos.side} {pos.symbol} 수량={qty:.6f} 가격={price:.4f} 수익률={pnl_pct:.2f}% 사유={reason}"
         )
