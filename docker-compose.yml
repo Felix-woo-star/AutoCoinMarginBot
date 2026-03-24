@@ -5,4 +5,4 @@ services:
     volumes:
       - ./config.yaml:/app/config.yaml:ro
       - ./logs:/app/logs
-    command: ["python", "main.py"]
+    command: ["python", "main.py", "--live"]
